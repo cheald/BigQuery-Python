@@ -1,5 +1,6 @@
 import calendar
 import json
+import apiclient
 from logging import getLogger, NullHandler
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -55,7 +56,8 @@ def get_client(project_id=None, credentials=None,
                service_url=None, service_account=None,
                private_key=None, private_key_file=None,
                json_key=None, json_key_file=None,
-               readonly=True, swallow_results=True):
+               readonly=True, swallow_results=True,
+               thread_safe=False):
     """Return a singleton instance of BigQueryClient. Either
     AssertionCredentials or a service account and private key combination need
     to be provided in order to authenticate requests to BigQuery.
@@ -94,6 +96,10 @@ def get_client(project_id=None, credentials=None,
     swallow_results : bool
         If set to False, then return the actual response value instead of
         converting to boolean. Default True.
+    thread_safe : bool
+        If set to True, create a new HTTP client per request to work around
+        httplib2's lack of thread safety. This is less performant, so don't
+        set it unless needed. Default False.
 
     Returns
     -------
@@ -145,7 +151,8 @@ def get_client(project_id=None, credentials=None,
             project_id = json_key['project_id']
 
     bq_service = _get_bq_service(credentials=credentials,
-                                 service_url=service_url)
+                                 service_url=service_url,
+                                 thread_safe=thread_safe)
 
     return BigQueryClient(bq_service, project_id, swallow_results)
 
@@ -164,16 +171,21 @@ def get_projects(bq_service):
     return projects
 
 
-def _get_bq_service(credentials=None, service_url=None):
+def _get_bq_service(credentials=None, service_url=None, thread_safe=False):
     """Construct an authorized BigQuery service object."""
 
     assert credentials, 'Must provide ServiceAccountCredentials'
-
-    http = credentials.authorize(Http())
-    service = build('bigquery', 'v2', http=http,
-                    discoveryServiceUrl=service_url)
-
-    return service
+    if thread_safe:
+        # Create a new Http() object for every request
+        def build_request(http, *args, **kwargs):
+            http = credentials.authorize(Http())
+            return apiclient.http.HttpRequest(http, *args, **kwargs)
+        return build('bigquery', 'v2', discoveryServiceUrl=service_url,
+                        requestBuilder=build_request, credentials=credentials)
+    else:
+        http = credentials.authorize(Http())
+        return build('bigquery', 'v2', http=http,
+                        discoveryServiceUrl=service_url)
 
 
 def _credentials():
